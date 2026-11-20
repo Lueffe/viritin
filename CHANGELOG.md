@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Calendar Versioning](https://calver.org/).
 
+## [26.11.20.402] - 2026-11-20
+
+### Added
+- Support Sagem RM50 Internet Radio and local FM Internet station mappings.
+
+### Changed
+- Build the Home Assistant add-on from the matching fork release tag.
+
 ## [26.11.07.400] - 2026-11-07
 
 ### Changed
