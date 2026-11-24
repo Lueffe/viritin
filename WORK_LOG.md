@@ -51,3 +51,18 @@ refusal/relogin on real UDP with local upstream, concurrent cap admission.
 Full go test ./..., go vet ./..., and go test -race ./internal/dnsserver
 ./internal/server pass. No real RM50/receiver or production deployment run.
 Version403 and add-on metadata agree, INI/upstream versions untouched. No merge.
+
+Independent review80 follow-up: FIND-80-1 reproduced zone-bearing IPv6 loss;
+FIND-80-2 reproduced one IPv6 prefix filling the map and silent capacity drops.
+New failing-first tests catch both. Canonical netip addresses now retain zones
+and unmap IPv4 on BOTH web learning and DNS/allow-list lookup. Authorization
+remains exact IP plus zone: deliberately not a /64 grant to unseen neighbours.
+Instead, each IPv6 /64 plus zone has64 learned-address slots within the4096
+whole-cache limit. Rate-limited fixed log reports overflow, at most once per
+minute. Earliest-expiry tracking forces immediate reclamation on a full-cache
+insert once any entry could expire, without rescanning per hostile packet.
+This supersedes earlier one-minute refusal caveat; normal idle sweeps remain
+traffic-driven. Added prefix-slot-reclamation and unseen-neighbour tests.
+Full tests/vet and DNS/server race pass after fixes; independent re-review
+requested. Fixed limits mean a very large shared /64 can still need explicit
+allow-list entries; this is not authentication or general DoS prevention.

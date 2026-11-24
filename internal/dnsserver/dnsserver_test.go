@@ -1,7 +1,11 @@
 package dnsserver
 
 import (
+	"bytes"
+	"fmt"
+	"log"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -212,5 +216,71 @@ func TestConcurrentWebTrafficCannotExceedClientCap(t *testing.T) {
 	wg.Wait()
 	if len(s.known) != 4096 {
 		t.Fatalf("concurrent cache size=%d", len(s.known))
+	}
+}
+
+func TestLearnedClientCanonicalAddressAndZone(t *testing.T) {
+	s := New("", "", "", true, "")
+	s.NoteWebClient("fe80::1%eth0")
+	if !s.clientAllowed("fe80:0:0:0:0:0:0:1%eth0") || s.clientAllowed("fe80::1%eth1") {
+		t.Fatal("link-local zone identity lost")
+	}
+	s.NoteWebClient("::ffff:192.0.2.1")
+	if !s.clientAllowed("192.0.2.1") {
+		t.Fatal("IPv4-mapped canonical mismatch")
+	}
+}
+func TestIPv6ChurnCannotFillGlobalCacheOrAuthorizeNeighbours(t *testing.T) {
+	s := New("", "", "", true, "")
+	for i := 1; i <= 5000; i++ {
+		s.NoteWebClient(fmt.Sprintf("2001:db8::%x", i))
+	}
+	if len(s.known) > 64 {
+		t.Fatalf("one prefix retained %d clients", len(s.known))
+	}
+	if s.clientAllowed("2001:db8::ffff") {
+		t.Fatal("unseen neighbour authorized")
+	}
+	s.NoteWebClient("2001:db8:1::1")
+	if !s.clientAllowed("2001:db8:1::1") {
+		t.Fatal("one prefix blocked another")
+	}
+}
+func TestFullCacheReclaimsExpiryImmediatelyAndLogsDropsWithLimit(t *testing.T) {
+	s := New("", "", "", true, "")
+	for i := 0; i < 4096; i++ {
+		s.NoteWebClient(net.IPv4(10, byte(i>>8), byte(i), 1).String())
+	}
+	var output bytes.Buffer
+	saved := log.Writer()
+	log.SetOutput(&output)
+	defer log.SetOutput(saved)
+	s.NoteWebClient("192.0.2.1")
+	s.NoteWebClient("192.0.2.2")
+	if strings.Count(output.String(), "cache full") != 1 {
+		t.Fatal("capacity drop absent or log not rate limited")
+	}
+	// Model a previously admitted client expiring just before this insertion.
+	s.known["10.0.0.1"] = time.Now().Add(-25 * time.Hour)
+	s.nextExpiry = time.Now().Add(-time.Second)
+	s.NoteWebClient("192.0.2.3")
+	if !s.clientAllowed("192.0.2.3") || len(s.known) != 4096 {
+		t.Fatal("full cache did not reclaim expiry immediately")
+	}
+}
+
+func TestIPv6PrefixSlotsFreedByExpiryWithoutGrantingSubnet(t *testing.T) {
+	s := New("", "", "", true, "")
+	for i := 1; i <= 64; i++ {
+		s.NoteWebClient(fmt.Sprintf("2001:db8::%x", i))
+	}
+	s.known["2001:db8::1"] = time.Now().Add(-25 * time.Hour)
+	s.nextExpiry = time.Now().Add(-time.Second)
+	s.NoteWebClient("2001:db8::ff")
+	if !s.clientAllowed("2001:db8::ff") || s.clientAllowed("2001:db8::1") || s.clientAllowed("2001:db8::ffff") {
+		t.Fatal("prefix expiry changed exact-IP grants")
+	}
+	if s.prefixCounts["2001:db8::/64%"] != 64 {
+		t.Fatal("prefix slot accounting drift")
 	}
 }
