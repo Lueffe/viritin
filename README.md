@@ -6,7 +6,7 @@
 
 Receivers from Yamaha, Denon, Marantz, Onkyo, Pioneer, Harman Kardon and Pro-Ject shipped with internet radio powered by vTuner. That service has since moved behind a subscription, and some manufacturers migrated their customers elsewhere by firmware update — leaving a lot of perfectly good hardware with a dead button. Viritin answers the service the receiver is still trying to reach, so it browses and plays exactly as it always did.
 
-> **Viritin is a maintained fork of [YTuner](https://github.com/coffeegreg/YTuner) by Greg P.** — MIT licensed, and the origin of nearly all of this code. The fork carries fixes and features upstream has not taken, builds with the Free Pascal compiler your distribution ships, and is tested in CI. See [doc/VIRITIN.md](doc/VIRITIN.md) for what changed, why it is named the way it is, and what is planned.
+> **Viritin is a maintained fork of [YTuner](https://github.com/coffeegreg/YTuner) by Greg P.** — MIT licensed, and the origin of nearly all of this code. The fork carries fixes and features upstream has not taken, is written in Go (ported from Free Pascal), and is tested in CI. See [doc/VIRITIN.md](doc/VIRITIN.md) for what changed, why it is named the way it is, and what is planned.
 
 ![AVR](img/avr.png)
 
@@ -42,7 +42,11 @@ The receiver has vTuner's hostname burned into its firmware, so the whole trick 
 * Optional DNS service, to intercept `*.vtuner.com` lookups.
 * Optional maintenance service.
 
-Runs on Linux, macOS, BSD, Solaris, Raspberry Pi OS, OpenWRT and Windows — on i386, AMD64/x86_64, ARM/ARM64, PowerPC or SPARC, and anything else the [Free Pascal Compiler](https://www.freepascal.org/) targets. It is small: serving radio, the process holds about 8 MB resident behind a 4.6 MB binary.
+The Go implementation is built in CI for Linux (amd64/arm64), macOS (amd64/arm64) and Windows (amd64) on the OS/architecture combinations listed in [the build workflow](.github/workflows/binaries.yml). Other Go targets are not verified here. Current binary size and resident memory have not been measured; the old Pascal figures do not describe this Go port.
+
+### What the Go implementation provides
+
+Viritin is now implemented in Go; the Free Pascal sources have been retired ([port notes](doc/GO-PORT.md)). It uses Go's TLS library and a pure-Go SQLite driver, without cgo for that database dependency. CI builds Linux amd64/arm64, macOS amd64/arm64 and Windows amd64 binaries and runs protocol test suites; Go unit tests also cover parts of the implementation. The MikroTik build recipe cross-compiles with `CGO_ENABLED=0` for its arm64 container image; this README change does not re-test that image. These are build and test arrangements, not a claim of testing every receiver. The former Pascal-era platform list is no longer claimed for this implementation.
 
 ## Quickest start: the Home Assistant add-on
 
@@ -204,11 +208,11 @@ could serve.
 
 ## Installation
 
-Viritin is a standalone binary. Beyond the optional OpenSSL and SQLite3 libraries below, it needs no runtime, framework, virtual machine or package manager.
+Viritin is a standalone Go binary. TLS uses Go's standard library, and SQLite support uses the pure-Go modernc.org/sqlite package; no separate OpenSSL or SQLite shared library is required.
 
-**Prebuilt binaries are built by CI** for `x86_64-linux`, `aarch64-darwin`, `x86_64-darwin` and `x86_64-win64`. Every change attaches a tarball for each to its run in the [Actions](../../actions) tab, and a tagged version publishes them as a [release](../../releases); each carries the binary, `viritin.ini` and the sample config files, ready to extract and run. The macOS builds also run the smoke suite on their own runner, so they are known to work there and not merely to have compiled.
+**CI builds binaries** for Linux amd64/arm64, macOS amd64/arm64 and Windows amd64, as listed in [`.github/workflows/binaries.yml`](.github/workflows/binaries.yml). Build runs upload artifacts; tagged releases publish archives containing the binary, `viritin.ini` and sample configuration. The macOS jobs also run the smoke suite on their runners; this is not a claim of testing on your receiver.
 
-You can still build it yourself with [`script/build.sh`](#building-on-linux-without-lazarus) — it needs only the Free Pascal compiler your distribution already ships — and the Home Assistant add-on above builds it for you. Upstream's [releases](https://github.com/coffeegreg/YTuner/releases) are builds of *YTuner* and do not carry this fork's fixes.
+You can still build it yourself using [`script/build.sh`](#building-with-go) and the Go toolchain required by `go.mod`, and the Home Assistant add-on above builds it for you. Upstream's [releases](https://github.com/coffeegreg/YTuner/releases) are builds of *YTuner* and do not carry this fork's fixes.
 
 ### Upgrading from YTuner, or from an earlier Viritin
 
@@ -249,35 +253,16 @@ You should end up with a directory laid out roughly like this:
  |-- retuner (or retuner.exe for Windows)
  |-- viritin.ini (Viritin important config file)
 ```
- Do not forget to add execute privileges to `retuner` on linux/*nix systems with a command like `chmod +x retuner`.  
+ If needed, add execute permission with `chmod +x viritin`.
 
 
-### OpenSSL (optional)
-If you want to use SSL to support Viritin HTTPS web request you have to get OpenSSL libraries.
-- Most linux/*nix systems install OpenSSL by default. Otherwise, use your favorite package manager to get OpenSSL libraries or download them from [Github](https://github.com/openssl/openssl) or visit [OpenSSL Wiki](https://wiki.openssl.org/index.php/Binaries) for binary distributions source.   
-- Windows users can download them from [Github](https://github.com/openssl/openssl) (follow [NOTES-WINDOWS.md](https://github.com/openssl/openssl/blob/master/NOTES-WINDOWS.md) instructions) or visit [OpenSSL Wiki](https://wiki.openssl.org/index.php/Binaries) for binary distributions source.
-Make sure to get/build the correct version of the OpenSSL libraries with the correct bit length for your OS. 32-bit libraries are needed if you chose to use the 32-bit version of Viritin or 64-bit for the AMD64/x86_64 version of Viritin.
-Finally, you should have 2 files:
-  * OpenSSL 1.0.2 and earlier:
-     + `ssleay32.dll` (or `libssl32.dll`) and `libeay32.dll`
-  * OpenSSL 1.1.x:
-     + 64-bit: `libssl-1_1-x64.dll` and `libcrypto-1_1-x64.dll`
-     + 32-bit: `libssl-1_1.dll` and `libcrypto-1_1.dll`
-  * OpenSSL 3.x.x:
-     + 64-bit: `libssl-3-x64.dll` and `libcrypto-3-x64.dll`
-     + 32-bit: `libssl-3.dll` and `libcrypto-3.dll`
-
-and place them in your `retuner` directory or anywhere in your system `PATH`.
-Make sure your system has valid CA certificates.
->Tip: The Viritin should work with LibreSSL libraries as well.
+### TLS
+HTTPS requests use Go's standard TLS implementation and the host's certificate trust configuration. The Go build does not load an OpenSSL shared library.
 
 ### SQLite3 (optional)
 If you want to forget about potential connection problems with `Radio-browser.info` while using Viritin and listening to your favorite stations, use one of the options `[catDB, catMemDB, catPermMemDB]` of the `RBCacheType` parameter in the `viritin.ini` file to download the full contents of the `Radio-browser.info` resources once and store it in your local SQLite3 database.
 Of course, only data that is useful for Viritin and AVR devices is downloaded and stored locally.
-Due to the use of the very popular SQLite database, Viritin will need to use the library provided by the SQLite development team.
->! Important ! : Minimal version of SQLite library is 3.33.0 (2020-08-14)
-
->Tip: If you faced problems with the SQLite library, read [this](doc/SQLITE.md) description.
+SQLite is included through the pure-Go modernc.org/sqlite dependency. No separately installed SQLite shared library is required by this build.
 
 ## Configuration
 
@@ -383,16 +368,16 @@ You can configure Viritin to use one common bookmark file (`bookmark.xml`) for a
 See [Application configuration](README.md#application-configuration) section above.
 
 ## Running the application
-### Linux / Unix (Solaris, BSD) / macOS
+### Linux / macOS
 If you credentials meet all requirements mentioned above just go to your Viritin directory and start application or simple use `sudo` to execute application: 
 ```
 $ sudo ./viritin
 ```
-Do not forget to add execute privileges to `retuner` on linux/*nix systems with a command like `chmod +x retuner`.
+If needed, add execute permission with `chmod +x viritin`.
 ### Windows
->Note: upstream withdrew its Windows binaries after false positives from Windows Defender and VirusTotal ([YTuner#87](https://github.com/coffeegreg/YTuner/issues/87)). This fork ships no prebuilt binaries at all, so on Windows you build it yourself either way.
+>Windows amd64 binaries are built by this fork's CI; see [Installation](#installation) for artifacts and releases.
 
-Simply execute `retuner.exe`. 
+Simply execute `viritin.exe`.
 
 ### Docker container
 If you are not familiar with building Docker containers you can read [this](doc/DOCKER.md).
@@ -414,25 +399,22 @@ Viritin does not have to run on the same LAN as your AVR — a VPS such as an Or
 Plenty of these receivers never got the firmware update that added Spotify Connect, so the Spotify app cannot see them at all. A Connect client such as [go-librespot](https://github.com/devgianlu/go-librespot) can republish playback as an ordinary Icecast stream, which Viritin then presents as a station the AVR can select. [doc/SPOTIFY.md](doc/SPOTIFY.md) has the recipe, what track titles need, and the caveats — Premium is required and the transport buttons on the amplifier will not drive playback.
 
 ## Build
-You can use [Lazarus Free Pascal RAD IDE](https://www.lazarus-ide.org/) to build Viritin. 
-Use the latest versions of IDE and FPC. Relevant project file is included.
 
-### Building on Linux without Lazarus
-`script/build.sh` builds Viritin with the plain Free Pascal compiler, so no IDE is required. It fetches Indy on first run, packs the embedded SQL resources and writes the binary to `bin/<cpu>-<os>/viritin`:
+### Building with Go
+Install the Go toolchain required by `go.mod` (currently Go 1.26.0). No Pascal compiler, Lazarus IDE or Indy source is used.
 
-```
-sudo apt install fp-compiler fp-units-fcl fp-units-net fp-units-db fp-units-misc lazarus-src zip git
+`script/build.sh` runs `go build` and writes the binary to `bin/<cpu>-<os>/viritin` (`viritin.exe` on Windows). The script maps `amd64` to `x86_64`, `arm64` to `aarch64` in the output path.
+
+```sh
 ./script/build.sh
+go test ./...
 ./script/smoke-test.sh
 ```
 
-`smoke-test.sh` starts the freshly built binary against a throwaway config and checks that the endpoints an AVR hits first still answer. Both scripts run in CI on every push (see `.github/workflows/build.yml`).
-
-Set `DEBUG=1` for an unoptimised build with debug information, or `INDY_DIR` / `LAZUTILS_DIR` if you keep those sources somewhere of your own.
+`smoke-test.sh` starts the freshly built binary against a throwaway config and checks that the endpoints an AVR hits first still answer. The PR workflow runs the build and smoke suite; see [`.github/workflows/build.yml`](.github/workflows/build.yml). To build just the executable directly, use `go build -o viritin .`.
 
 ### Dependencies
-Viritin uses [Indy - Internet Direct](https://github.com/IndySockets/Indy) library to build its own binary files. Of course, Viritin binaries no longer need any additional libraries beyond the optional OpenSSL and/or SQLite3.
->Important: Use the latest version of Indy library to build Viritin.
+Go downloads the modules listed in `go.mod` and `go.sum` during the first build. TLS is provided by Go's standard library and SQLite by the pure-Go modernc.org/sqlite module. The retired Pascal build's Indy, Lazarus and FPC settings are not used.
 
 ## Credits
 
