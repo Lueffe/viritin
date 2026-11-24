@@ -15,6 +15,7 @@ import (
 )
 
 const clientTTL = 24 * time.Hour
+const maxKnownClients = 4096
 
 type Server struct {
 	Patterns           []string
@@ -24,9 +25,10 @@ type Server struct {
 	RestrictForwarding bool
 	AllowedClients     []string
 
-	mu    sync.Mutex
-	known map[string]time.Time
-	conns []*mdns.Server
+	mu        sync.Mutex
+	known     map[string]time.Time
+	nextPrune time.Time
+	conns     []*mdns.Server
 }
 
 func New(intercept, upstream, advertise string, restrict bool, allowed string) *Server {
@@ -49,12 +51,28 @@ func splitList(s string) []string {
 // NoteWebClient records an address that reached the web service, which is what
 // lets a public host forward that device's other lookups without an allow-list.
 func (s *Server) NoteWebClient(addr string) {
-	if strings.TrimSpace(addr) == "" {
+	addr = strings.TrimSpace(addr)
+	if net.ParseIP(addr) == nil {
 		return
 	}
+	now := time.Now()
 	s.mu.Lock()
-	s.known[addr] = time.Now()
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	// Sweep at most once a minute: a full cache must not turn new addresses
+	// into a full-map scan on every login request.
+	if !now.Before(s.nextPrune) {
+		for address, seen := range s.known {
+			if now.Sub(seen) >= clientTTL {
+				delete(s.known, address)
+			}
+		}
+		s.nextPrune = now.Add(time.Minute)
+	}
+	if _, exists := s.known[addr]; !exists && len(s.known) >= maxKnownClients {
+		// Fail closed rather than let address churn evict a working receiver.
+		return
+	}
+	s.known[addr] = now
 }
 
 func (s *Server) clientAllowed(addr string) bool {
@@ -66,7 +84,11 @@ func (s *Server) clientAllowed(addr string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.known[addr]
-	return ok && time.Since(t) < clientTTL
+	if ok && time.Since(t) >= clientTTL {
+		delete(s.known, addr)
+		return false
+	}
+	return ok
 }
 
 // Matches mirrors InterceptMatches: "*.x.com" covers subdomains and the apex,

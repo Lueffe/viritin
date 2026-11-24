@@ -2,6 +2,7 @@ package dnsserver
 
 import (
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -117,5 +118,99 @@ func TestUpstreamDownGivesNotImplemented(t *testing.T) {
 	defer stop()
 	if r := ask(t, addr, "example.org", mdns.TypeA); r.Rcode != mdns.RcodeNotImplemented {
 		t.Fatalf("rcode %d", r.Rcode)
+	}
+}
+
+func TestKnownClientCachePrunesExpiredEntriesOnWebTraffic(t *testing.T) {
+	s := New("", "", "", true, "")
+	s.known["192.0.2.1"] = time.Now().Add(-25 * time.Hour)
+	s.NoteWebClient("192.0.2.2")
+	if _, ok := s.known["192.0.2.1"]; ok {
+		t.Fatal("expired entry retained")
+	}
+	if !s.clientAllowed("192.0.2.2") {
+		t.Fatal("new client not admitted")
+	}
+}
+
+func TestKnownClientCacheCapsWithoutEvictingOrExtendingOtherClients(t *testing.T) {
+	s := New("", "", "", true, "203.0.113.9")
+	old := time.Now().Add(-23 * time.Hour)
+	for i := 0; i < 4096; i++ {
+		s.known[net.IPv4(10, byte(i>>8), byte(i), 1).String()] = old
+	}
+	s.NoteWebClient("192.0.2.1")
+	if len(s.known) != 4096 {
+		t.Fatalf("cache grew to %d", len(s.known))
+	}
+	if s.clientAllowed("192.0.2.1") {
+		t.Fatal("overflow client got forwarding")
+	}
+	s.NoteWebClient("10.0.0.1")
+	if !s.known["10.0.0.1"].After(old) {
+		t.Fatal("full cache prevents existing client refresh")
+	}
+	if s.known["10.0.1.1"] != old {
+		t.Fatal("refresh extended other clients")
+	}
+	if !s.clientAllowed("203.0.113.9") {
+		t.Fatal("cap blocked explicit allow list")
+	}
+}
+
+func TestKnownClientCacheRejectsNonIPAddresses(t *testing.T) {
+	s := New("", "", "", true, "")
+	for _, addr := range []string{"", " ", "not-an-ip", "192.0.2.1:80"} {
+		s.NoteWebClient(addr)
+	}
+	if len(s.known) != 0 {
+		t.Fatal("cache retained non-IP addresses")
+	}
+	s.NoteWebClient(" 192.0.2.1 ")
+	if !s.clientAllowed("192.0.2.1") {
+		t.Fatal("valid address not normalized")
+	}
+}
+
+func TestExpiredKnownClientIsRefusedOnWireAndRemoved(t *testing.T) {
+	up, stopUp := upstream(t)
+	defer stopUp()
+	s := New("*.vtuner.com", "127.0.0.1", "10.1.2.3", true, "")
+	s.UpstreamPort = up
+	s.known["127.0.0.1"] = time.Now().Add(-25 * time.Hour)
+	addr, stop := serve(t, mdns.HandlerFunc(s.Handle))
+	defer stop()
+	if r := ask(t, addr, "example.org", mdns.TypeA); r.Rcode != mdns.RcodeRefused {
+		t.Fatal("expired client forwarded")
+	}
+	s.mu.Lock()
+	_, remains := s.known["127.0.0.1"]
+	s.mu.Unlock()
+	if remains {
+		t.Fatal("expired queried entry retained")
+	}
+	s.NoteWebClient("127.0.0.1")
+	if r := ask(t, addr, "example.org", mdns.TypeA); len(r.Answer) != 1 {
+		t.Fatal("fresh login did not restore forwarding")
+	}
+}
+
+func TestConcurrentWebTrafficCannotExceedClientCap(t *testing.T) {
+	s := New("", "", "", true, "")
+	var wg sync.WaitGroup
+	for g := 0; g < 16; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 400; i++ {
+				addr := net.IPv4(10, byte(g), byte(i>>8), byte(i)).String()
+				s.NoteWebClient(addr)
+				s.clientAllowed(addr)
+			}
+		}(g)
+	}
+	wg.Wait()
+	if len(s.known) != 4096 {
+		t.Fatalf("concurrent cache size=%d", len(s.known))
 	}
 }
