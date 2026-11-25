@@ -7,6 +7,7 @@ package dnsserver
 import (
 	"log"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,8 @@ import (
 )
 
 const clientTTL = 24 * time.Hour
+const maxKnownClients = 4096
+const maxIPv6PrefixClients = 64
 
 type Server struct {
 	Patterns           []string
@@ -24,9 +27,13 @@ type Server struct {
 	RestrictForwarding bool
 	AllowedClients     []string
 
-	mu    sync.Mutex
-	known map[string]time.Time
-	conns []*mdns.Server
+	mu           sync.Mutex
+	known        map[string]time.Time
+	nextPrune    time.Time
+	nextExpiry   time.Time
+	nextDropLog  time.Time
+	prefixCounts map[string]int
+	conns        []*mdns.Server
 }
 
 func New(intercept, upstream, advertise string, restrict bool, allowed string) *Server {
@@ -48,25 +55,99 @@ func splitList(s string) []string {
 
 // NoteWebClient records an address that reached the web service, which is what
 // lets a public host forward that device's other lookups without an allow-list.
-func (s *Server) NoteWebClient(addr string) {
-	if strings.TrimSpace(addr) == "" {
-		return
+func canonicalClient(raw string) (string, string) {
+	address, err := netip.ParseAddr(strings.TrimSpace(raw))
+	if err != nil {
+		return "", ""
 	}
-	s.mu.Lock()
-	s.known[addr] = time.Now()
-	s.mu.Unlock()
+	address = address.Unmap()
+	if address.Is4() {
+		return address.String(), ""
+	}
+	prefix := netip.PrefixFrom(address.WithZone(""), 64).Masked().String()
+	// Identical link-local prefixes on different interfaces are separate networks.
+	return address.String(), prefix + "%" + address.Zone()
 }
 
-func (s *Server) clientAllowed(addr string) bool {
+func (s *Server) removeKnown(addr string) {
+	delete(s.known, addr)
+	_, prefix := canonicalClient(addr)
+	if prefix != "" {
+		s.prefixCounts[prefix]--
+		if s.prefixCounts[prefix] <= 0 {
+			delete(s.prefixCounts, prefix)
+		}
+	}
+}
+
+func (s *Server) NoteWebClient(raw string) {
+	addr, prefix := canonicalClient(raw)
+	if addr == "" {
+		return
+	}
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.known == nil {
+		s.known = make(map[string]time.Time)
+	}
+	if s.prefixCounts == nil {
+		s.prefixCounts = make(map[string]int)
+	}
+	_, exists := s.known[addr]
+	full := !exists && (len(s.known) >= maxKnownClients || prefix != "" && s.prefixCounts[prefix] >= maxIPv6PrefixClients)
+	// An earliest-expiry lower bound allows immediate reclamation without
+	// turning each overflow request into a full-map scan.
+	if !now.Before(s.nextPrune) || full && !s.nextExpiry.IsZero() && !now.Before(s.nextExpiry) {
+		s.nextExpiry = time.Time{}
+		for address, seen := range s.known {
+			expiry := seen.Add(clientTTL)
+			if !now.Before(expiry) {
+				s.removeKnown(address)
+				continue
+			}
+			if s.nextExpiry.IsZero() || expiry.Before(s.nextExpiry) {
+				s.nextExpiry = expiry
+			}
+		}
+		s.nextPrune = now.Add(time.Minute)
+	}
+	if !exists && (len(s.known) >= maxKnownClients || prefix != "" && s.prefixCounts[prefix] >= maxIPv6PrefixClients) {
+		if !now.Before(s.nextDropLog) {
+			log.Print("DNS learned-client cache full: new address refused; check allow-list and login traffic")
+			s.nextDropLog = now.Add(time.Minute)
+		}
+		return
+	}
+	if _, stillExists := s.known[addr]; !stillExists && prefix != "" {
+		s.prefixCounts[prefix]++
+	}
+	s.known[addr] = now
+	expiry := now.Add(clientTTL)
+	if s.nextExpiry.IsZero() || expiry.Before(s.nextExpiry) {
+		s.nextExpiry = expiry
+	}
+}
+
+func (s *Server) clientAllowed(raw string) bool {
+	addr, _ := canonicalClient(raw)
+	if addr == "" {
+		return false
+	}
 	for _, a := range s.AllowedClients {
-		if a == addr {
+		allowed, _ := canonicalClient(a)
+		if allowed == addr {
 			return true
 		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.known[addr]
-	return ok && time.Since(t) < clientTTL
+	if ok && time.Since(t) >= clientTTL {
+		s.removeKnown(addr)
+		return false
+	}
+	return ok
 }
 
 // Matches mirrors InterceptMatches: "*.x.com" covers subdomains and the apex,

@@ -5,13 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Calendar Versioning](https://calver.org/).
 
-## [26.11.20.402] - 2026-11-20
+## [26.11.25.403] - 2026-11-25
 
-### Added
-- Support Sagem RM50 Internet Radio and local FM Internet station mappings.
+### Fixed
+- Bound learned DNS forwarding clients to4096 IP addresses with64 slots per IPv6 /64, preserve IPv6 interface zones, reclaim expired entries and rate-limit overflow warnings. Exact-address authorization and explicit allow-list access stay unchanged.
+
+## [26.11.24.402] - 2026-11-24
 
 ### Changed
-- Build the Home Assistant add-on from the matching fork release tag.
+- Correct README build and runtime guidance for the Go implementation and current CI targets; remove unmeasured legacy memory and binary-size figures.
 
 ## [26.11.07.400] - 2026-11-07
 
