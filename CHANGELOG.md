@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Calendar Versioning](https://calver.org/).
 
+## [26.11.25.403] - 2026-11-25
+
+### Fixed
+- Bound learned DNS forwarding clients to4096 IP addresses with64 slots per IPv6 /64, preserve IPv6 interface zones, reclaim expired entries and rate-limit overflow warnings. Exact-address authorization and explicit allow-list access stay unchanged.
+
 ## [26.11.24.402] - 2026-11-24
 
 ### Changed
